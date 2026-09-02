@@ -21,10 +21,27 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: package/ego-browser/package-lock.json
+          cache-dependency-path: |
+            package/ego-browser/package-lock.json
+            package/ego-lite-mcp/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - run: npm ci
       - run: npm test
       - run: npm run validate:site-skills
+      - name: Install MCP adapter dependencies
+        working-directory: package/ego-lite-mcp
+        run: npm ci --ignore-scripts
+      - name: Typecheck MCP adapter
+        working-directory: package/ego-lite-mcp
+        run: npm run typecheck
+      - name: Test MCP adapter
+        working-directory: package/ego-lite-mcp
+        run: bun test
+      - name: Build MCP adapter
+        working-directory: package/ego-lite-mcp
+        run: bun build src/index.ts --target bun --outfile "$RUNNER_TEMP/ego-lite-mcp.js"
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

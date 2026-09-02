@@ -8,9 +8,14 @@
   },
   "scripts": {
     "dev": "bun src/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "bun": ">=1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
   }
 }
