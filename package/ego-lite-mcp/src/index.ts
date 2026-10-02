@@ -8,7 +8,7 @@ const SERVER_INFO = { name: "ego-lite-mcp", version: "0.1.0" } as const;
 const TASK_SPACE_PREFIX = "ego-lite-mcp:";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 300_000;
-const MAX_STDOUT_CHARS = 8_000_000;
+const MAX_OUTPUT_CHARS = 8_000_000;
 const MAX_STDERR_CHARS = 8_000;
 const MAX_REQUEST_LINE_LENGTH = 1_000_000;
 const MAX_TASK_LENGTH = 80;
@@ -323,19 +323,40 @@ function scriptLiteral(value: string): string {
     .replaceAll("\u2029", "\\u2029");
 }
 
+// The installed app can bundle flat helpers even when this checkout has facades.
+// Select by capability, never by catching an action/control error and retrying it.
+function sdkCall(
+  facade: "taskSpaces" | "browser" | "page",
+  call: string,
+  flatCall: string,
+): string {
+  // Keep await on each call: older CLIs can parse `await (expression)` as a
+  // classic-script call to an identifier named "await", rather than top-level await.
+  return `(typeof ${facade} !== 'undefined' ? await ${facade}.${call} : await ${flatCall})`;
+}
+
+const listSpacesCall = sdkCall("taskSpaces", "list()", "listTaskSpaces()");
+const pageInfoCall = sdkCall("page", "info()", "pageInfo()");
+
 function emit(expression: string): string {
-  return `const __result = await (${expression});\nconsole.log(JSON.stringify({ __egoLiteMcp: true, ok: true, result: __result }));`;
+  return [
+    `const __result = ${expression};`,
+    "const __output = JSON.stringify({ __egoLiteMcp: true, ok: true, result: __result });",
+    "if (typeof cliLog === 'function') { cliLog(__output); } else { console.log(__output); }",
+  ].join("\n");
 }
 
 function withTask(task: string, body: string): string {
   const taskLiteral = scriptLiteral(task);
   return [
     "const __isAgentOwned = (space) => space?.ownership === 'agent' || space?.ownership === 'agentDelegatedToUser';",
-    "const __spaces = await taskSpaces.list();",
+    `const __spaces = ${listSpacesCall};`,
     `const __existingTask = __spaces.find((space) => space?.name === ${taskLiteral});`,
     "if (__existingTask && !__isAgentOwned(__existingTask)) { throw new Error('Refusing to use a non-agent-owned Ego Lite task space.'); }",
-    `const __task = __existingTask ? await taskSpaces.switch(${taskLiteral}) : await taskSpaces.useOrCreate(${taskLiteral});`,
-    "if (!__isAgentOwned(__task)) { throw new Error('Refusing to use a task space without agent ownership.'); }",
+    `const __task = __existingTask ? ${sdkCall("taskSpaces", `switch(${taskLiteral})`, `switchTaskSpace(${taskLiteral})`)} : ${sdkCall("taskSpaces", `useOrCreate(${taskLiteral})`, `useOrCreateTaskSpace(${taskLiteral})`)};`,
+    // Native creation responses may omit ownership; verify the exact id/name.
+    `const __verifiedTask = __task?.ownership === undefined && Number.isInteger(__task?.id) ? ${listSpacesCall}.find((space) => space?.id === __task.id && space?.name === ${taskLiteral}) : __task;`,
+    "if (!__isAgentOwned(__verifiedTask)) { throw new Error('Refusing to use a task space without agent ownership.'); }",
     body,
   ].join("\n");
 }
@@ -348,22 +369,29 @@ export function scriptForTool(
   switch (name) {
     case "browser_list_spaces":
       return emit(
-        `(await taskSpaces.list()).filter((space) => typeof space?.name === 'string' && space.name.startsWith(${scriptLiteral(TASK_SPACE_PREFIX)}) && (space.ownership === 'agent' || space.ownership === 'agentDelegatedToUser'))`,
+        `${listSpacesCall}.filter((space) => typeof space?.name === 'string' && space.name.startsWith(${scriptLiteral(TASK_SPACE_PREFIX)}) && (space.ownership === 'agent' || space.ownership === 'agentDelegatedToUser'))`,
       );
     case "browser_list_tabs":
-      return withTask(taskName(args), emit("browser.listTabs()"));
+      return withTask(
+        taskName(args),
+        emit(sdkCall("browser", "listTabs()", "listTabs()")),
+      );
     case "browser_open": {
       const task = taskName(args);
       const url = requireUrl(args);
       return withTask(
         task,
-        `const __tab = await browser.openOrReuseTab(${scriptLiteral(url)}, { wait: true, timeout: 20_000 });\n${emit("({ tab: __tab, page: await page.info() })")}`,
+        // Facade timeouts are milliseconds; flat-helper timeouts are seconds.
+        `const __tab = ${sdkCall("browser", `openOrReuseTab(${scriptLiteral(url)}, { wait: true, timeout: 20_000 })`, `openOrReuseTab(${scriptLiteral(url)}, { wait: true, timeout: 20 })`)};\n${emit(`({ tab: __tab, page: ${pageInfoCall} })`)}`,
       );
     }
     case "browser_snapshot":
-      return withTask(taskName(args), emit("page.snapshot()"));
+      return withTask(
+        taskName(args),
+        emit(sdkCall("page", "snapshot()", "snapshotText()")),
+      );
     case "browser_page_info":
-      return withTask(taskName(args), emit("page.info()"));
+      return withTask(taskName(args), emit(pageInfoCall));
     case "browser_click": {
       const target = requireString(args, "target", {
         maxLength: MAX_TARGET_LENGTH,
@@ -371,7 +399,7 @@ export function scriptForTool(
       });
       return withTask(
         taskName(args),
-        `await page.locator(${scriptLiteral(target)}).click();\n${emit("page.info()")}`,
+        `${sdkCall("page", `locator(${scriptLiteral(target)}).click()`, `click(${scriptLiteral(target)})`)};\n${emit(pageInfoCall)}`,
       );
     }
     case "browser_fill": {
@@ -385,7 +413,7 @@ export function scriptForTool(
       });
       return withTask(
         taskName(args),
-        `await page.locator(${scriptLiteral(target)}).fill(${scriptLiteral(text)});\n${emit("page.info()")}`,
+        `${sdkCall("page", `locator(${scriptLiteral(target)}).fill(${scriptLiteral(text)})`, `fillInput(${scriptLiteral(target)}, ${scriptLiteral(text)})`)};\n${emit(pageInfoCall)}`,
       );
     }
     case "browser_press_key": {
@@ -395,14 +423,14 @@ export function scriptForTool(
       });
       return withTask(
         taskName(args),
-        `await page.keyboard.press(${scriptLiteral(key)});\n${emit("page.info()")}`,
+        `${sdkCall("page", `keyboard.press(${scriptLiteral(key)})`, `pressKey(${scriptLiteral(key)})`)};\n${emit(pageInfoCall)}`,
       );
     }
     case "browser_scroll": {
       const dy = requireInteger(args, "dy", -10_000, 10_000);
       return withTask(
         taskName(args),
-        `await page.mouse.wheel(0, ${dy});\n${emit("page.info()")}`,
+        `${sdkCall("page", `mouse.wheel(0, ${dy})`, `scroll({ dy: ${dy} })`)};\n${emit(pageInfoCall)}`,
       );
     }
     default:
@@ -503,17 +531,23 @@ export function runEgoBrowser(
       rejectOnce(new Error(`ego-browser timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      if (stdout.length > MAX_STDOUT_CHARS) {
+    const checkOutputLimit = () => {
+      if (stdout.length + stderr.length > MAX_OUTPUT_CHARS) {
         child.kill("SIGKILL");
         rejectOnce(new Error("ego-browser output exceeded the MCP limit."));
       }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (settled) return;
+      stdout += chunk;
+      checkOutputLimit();
     });
     child.stderr.on("data", (chunk: string) => {
-      stderr = `${stderr}${chunk}`.slice(-MAX_STDERR_CHARS);
+      if (settled) return;
+      stderr += chunk;
+      checkOutputLimit();
     });
     child.on("error", (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") {
@@ -539,7 +573,7 @@ export function runEgoBrowser(
       }
       clearTimeout(timer);
       if (code !== 0) {
-        const detail = sanitizeRuntimeText(stderr.trim());
+        const detail = sanitizeRuntimeText(stderr.slice(-MAX_STDERR_CHARS).trim());
         rejectOnce(
           new Error(
             `ego-browser exited with code ${code}${detail ? `: ${detail}` : "."}`,
@@ -548,7 +582,9 @@ export function runEgoBrowser(
         return;
       }
       try {
-        resolve(parseRunnerOutput(stdout));
+        // Installed CLIs may forward nodejs/cliLog output to stderr. Keep the
+        // streams separate until complete so interleaved chunks cannot corrupt JSON.
+        resolve(parseRunnerOutput(`${stdout}\n${stderr}`));
         settled = true;
       } catch (error) {
         rejectOnce(error instanceof Error ? error : new Error(String(error)));
