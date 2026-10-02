@@ -91,7 +91,7 @@ describe("ego-lite-mcp", () => {
     ).toBe(false);
   });
 
-  it("uses the current Ego Lite nodejs facade APIs", () => {
+  it("supports facade APIs and installed flat helpers without exposing generic execution", () => {
     const scripts = [
       scriptForTool("browser_list_spaces", {}),
       scriptForTool("browser_list_tabs", { task: "research" }),
@@ -114,7 +114,7 @@ describe("ego-lite-mcp", () => {
     for (const script of scripts) {
       expectParseableScript(script);
       expect(script).not.toMatch(
-        /\b(?:browserJs|browserCdp|serverFetch|browserFetch|uploadFile|cliLog|fillInput|pageInfo)\s*\(/,
+        /\b(?:browserJs|browserCdp|serverFetch|browserFetch|uploadFile)\s*\(/,
       );
     }
     expect(scripts.join("\n")).toContain("taskSpaces.useOrCreate");
@@ -123,6 +123,13 @@ describe("ego-lite-mcp", () => {
     expect(scripts.join("\n")).toContain("page.snapshot()");
     expect(scripts.join("\n")).toContain("page.info()");
     expect(scripts.join("\n")).toContain("console.log");
+    for (const helper of [
+      "listTaskSpaces", "switchTaskSpace", "useOrCreateTaskSpace",
+      "listTabs", "openOrReuseTab", "snapshotText", "pageInfo",
+      "click", "fillInput", "pressKey", "scroll", "cliLog",
+    ]) {
+      expect(scripts.join("\n")).toContain(`${helper}(`);
+    }
   });
 
   it("serializes every user-controlled script value", () => {
