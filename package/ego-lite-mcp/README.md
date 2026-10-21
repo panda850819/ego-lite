@@ -65,7 +65,9 @@ EGO_LITE_MCP_TIMEOUT_MS=45000
 
 All normal task names are prefixed with `ego-lite-mcp:` before they are sent to Ego Lite. Existing spaces are checked first and must be agent-owned (`agent` or `agentDelegatedToUser`); user-owned spaces are never claimed or reused. `browser_list_spaces` returns only prefixed, agent-owned spaces.
 
-The generated scripts use the current Ego Lite Node.js facade: `taskSpaces.list()`, `taskSpaces.useOrCreate()`, `browser.listTabs()`, `browser.openOrReuseTab()`, `page.snapshot()`, `page.info()`, `page.locator()`, `page.keyboard.press()`, `page.mouse.wheel()`, and `console.log()`.
+The generated scripts detect the SDK exposed by the installed `ego-browser`, which can differ from this checkout. They prefer the `taskSpaces` / `browser` / `page` facades when present, and otherwise call the installed flat helpers (`listTaskSpaces`, `switchTaskSpace`, `useOrCreateTaskSpace`, `listTabs`, `openOrReuseTab`, `snapshotText`, `pageInfo`, `click`, `fillInput`, `pressKey`, `scroll`). Results use `cliLog` when available, otherwise `console.log`. The runner accepts the marked JSON envelope from stdout or stderr (the installed CLI may forward output to stderr), with one combined output limit. If native creation omits ownership, the adapter re-reads the exact task id/name and still requires agent ownership before browser actions.
+
+Navigation waits remain 20 seconds on both SDKs: `timeout: 20_000` for the facades, `timeout: 20` for flat helpers. Capability detection happens before the operation; action or ownership/control errors are never retried through a different SDK. No app update or service restart is needed for this compatibility handling.
 
 ## Security model
 
@@ -95,4 +97,4 @@ bun test
 bun build src/index.ts --target bun --outfile /tmp/ego-lite-mcp.js
 ```
 
-Tests inject a runner and use temporary fake executables for protocol/runner checks; CI does not require Ego Lite or a logged-in browser session.
+Tests inject a runner and use temporary fake executables for protocol/runner checks. The stdio integration suite also launches the real adapter and executes its generated scripts in subprocesses exposing only a flat SDK or only a facade SDK. It covers all nine tools, timeout units, literal arguments, task reuse, incomplete creation metadata, ownership refusal, control errors, and bounded stdout/stderr results (including large snapshots). CI does not require Ego Lite or a logged-in browser session.
